@@ -68,6 +68,12 @@
             color: #999;
             margin-top: 5px;
         }
+        .error {
+            color: #e53935;
+        }
+        .success {
+            color: #43a047;
+        }
         @media (max-width: 480px) {
             body {
                 padding: 10px;
@@ -88,120 +94,128 @@
         <!-- 国际金价输入（美元/盎司）→ 计算人民币金价 -->
         <div class="form-item">
             <label>国际金价（美元/盎司）</label>
-            <input type="number" id="goldUsd" placeholder="请输入国际金价，自动计算人民币金价" step="0.01">
+            <input type="number" id="goldUsd" placeholder="请输入国际金价，自动计算人民币金价" step="0.01" min="0.01">
             <div class="tip">输入后实时计算：人民币金价（元/克）</div>
         </div>
 
         <!-- 人民币金价输入（元/克）→ 计算国际金价 -->
         <div class="form-item">
             <label>人民币金价（元/克）</label>
-            <input type="number" id="goldCny" placeholder="请输入人民币金价，自动计算国际金价" step="0.01">
+            <input type="number" id="goldCny" placeholder="请输入人民币金价，自动计算国际金价" step="0.01" min="0.01">
             <div class="tip">输入后实时计算：国际金价（美元/盎司）</div>
         </div>
 
-        <!-- 实时汇率展示（自动更新） -->
+        <!-- 实时汇率展示（自动更新+状态提示） -->
         <div class="rate-info" id="rateInfo">
-            实时汇率：1 USD = -- CNY | 最后更新：--
+            正在加载实时汇率... | 最后更新：--
         </div>
     </div>
 
     <script>
-        // 黄金换算常量（固定值，国际通用计算标准）
+        // 黄金换算常量（国际通用计算标准）
         const OUNCE_TO_GRAM = 31.1035; // 1金衡盎司 = 31.1035克
         const REFRESH_INTERVAL = 60000; // 汇率自动刷新间隔：60秒（可修改）
-        // 新浪免费汇率接口（稳定无密钥，美元兑人民币）
-        const RATE_API = 'https://hq.sinajs.cn/list=fx_susdcny';
+        // 替换为【无跨域限制】的美元兑人民币公开接口（稳定可用，免密钥）
+        const RATE_API = 'https://api.exchangerate-api.com/v4/latest/USD';
 
         // 获取DOM元素
         const goldUsdInput = document.getElementById('goldUsd');
         const goldCnyInput = document.getElementById('goldCny');
         const rateInfoEl = document.getElementById('rateInfo');
 
-        // 全局存储当前实时汇率
+        // 全局存储当前实时汇率（初始值设为0，加载成功后更新）
         let currentUsdCny = 0;
 
-        // 1. 核心：获取并更新实时美元兑人民币汇率
+        // 1. 核心修复：获取并更新实时美元兑人民币汇率（无跨域）
         async function getUsdCnyRate() {
             try {
-                const response = await fetch(RATE_API);
-                const data = await response.text();
-                // 解析新浪接口返回的文本数据，提取实时汇率
-                const rateData = data.split(',');
-                const realRate = rateData[1];
+                rateInfoEl.className = 'rate-info';
+                rateInfoEl.textContent = '正在加载实时汇率... | 最后更新：--';
                 
-                // 验证数据有效性
-                if (!realRate || isNaN(parseFloat(realRate))) {
-                    throw new Error('汇率数据无效');
+                // 发起跨域友好的API请求
+                const response = await fetch(RATE_API);
+                if (!response.ok) throw new Error(`接口请求失败，状态码：${response.status}`);
+                
+                const data = await response.json();
+                // 提取美元兑人民币汇率（API返回格式：rates.CNY = 实时汇率）
+                const realRate = data.rates.CNY;
+                
+                // 严格验证数据有效性
+                if (!realRate || isNaN(parseFloat(realRate)) || realRate <= 0) {
+                    throw new Error('汇率数据无效或为非正数');
                 }
 
                 // 更新全局汇率（保留4位小数，保证计算精度）
                 currentUsdCny = parseFloat(realRate).toFixed(4) * 1;
-                // 更新页面汇率展示和最后更新时间
+                // 格式化更新时间（年-月-日 时:分:秒）
                 const now = new Date().toLocaleString('zh-CN', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
                 });
+                // 成功提示+汇率展示
+                rateInfoEl.className = 'rate-info success';
                 rateInfoEl.textContent = `实时汇率：1 USD = ${currentUsdCny} CNY | 最后更新：${now}`;
 
             } catch (error) {
-                rateInfoEl.textContent = `汇率加载失败，正在重试... | 最后更新：--`;
+                // 错误提示（保留上一次有效汇率，若无则提示）
+                rateInfoEl.className = 'rate-info error';
+                if (currentUsdCny > 0) {
+                    rateInfoEl.textContent = `汇率刷新失败，使用上次有效汇率：1 USD = ${currentUsdCny} CNY | 最后更新：--`;
+                } else {
+                    rateInfoEl.textContent = `汇率加载失败，请刷新页面！ | 最后更新：--`;
+                }
                 console.error('汇率获取失败：', error);
             }
         }
 
         // 2. 核心换算公式：国际金价（美元/盎司）→ 人民币金价（元/克）
         function usdToCny(goldUsd) {
-            // 公式：(国际金价 × 实时汇率) ÷ 金衡盎司转克系数
-            // 保留2位小数，符合金价展示习惯
             return ((goldUsd * currentUsdCny) / OUNCE_TO_GRAM).toFixed(2) * 1;
         }
 
         // 3. 核心换算公式：人民币金价（元/克）→ 国际金价（美元/盎司）
         function cnyToUsd(goldCny) {
-            // 公式：(人民币金价 × 金衡盎司转克系数) ÷ 实时汇率
-            // 保留2位小数，符合国际金价展示习惯
             return ((goldCny * OUNCE_TO_GRAM) / currentUsdCny).toFixed(2) * 1;
         }
 
-        // 4. 输入框联动：输入国际金价，实时计算人民币金价
+        // 4. 优化输入监听：国际金价输入 → 实时计算人民币金价
         goldUsdInput.addEventListener('input', function() {
-            // 汇率未加载时，不计算
-            if (currentUsdCny === 0) {
-                goldCnyInput.value = '';
-                return;
-            }
-            const value = this.value.trim() * 1;
-            // 输入合法数值才计算，否则清空目标输入框
+            // 汇率未加载则不计算
+            if (currentUsdCny === 0) return;
+            // 优化数值校验：过滤空值、非数值、0和负数
+            const value = parseFloat(this.value.trim());
             if (!isNaN(value) && value > 0) {
                 goldCnyInput.value = usdToCny(value);
             } else {
-                goldCnyInput.value = '';
+                goldCnyInput.value = ''; // 非法输入清空目标框
             }
         });
 
-        // 5. 输入框联动：输入人民币金价，实时计算国际金价
+        // 5. 优化输入监听：人民币金价输入 → 实时计算国际金价
         goldCnyInput.addEventListener('input', function() {
-            // 汇率未加载时，不计算
-            if (currentUsdCny === 0) {
-                goldUsdInput.value = '';
-                return;
-            }
-            const value = this.value.trim() * 1;
-            // 输入合法数值才计算，否则清空目标输入框
+            // 汇率未加载则不计算
+            if (currentUsdCny === 0) return;
+            // 优化数值校验：过滤空值、非数值、0和负数
+            const value = parseFloat(this.value.trim());
             if (!isNaN(value) && value > 0) {
                 goldUsdInput.value = cnyToUsd(value);
             } else {
-                goldUsdInput.value = '';
+                goldUsdInput.value = ''; // 非法输入清空目标框
             }
         });
 
-        // 页面初始化：立即加载汇率 + 定时自动刷新汇率 + 监听输入
+        // 页面初始化：立即加载汇率 + 定时自动刷新 + 输入框防抖
         window.onload = function() {
-            // 首次加载汇率
+            // 首次加载汇率（优先获取）
             getUsdCnyRate();
-            // 定时自动刷新汇率（每60秒一次）
+            // 定时自动刷新汇率（每60秒一次，后台自动执行）
             setInterval(getUsdCnyRate, REFRESH_INTERVAL);
+            // 输入框失焦时去除多余空格（优化体验）
+            [goldUsdInput, goldCnyInput].forEach(input => {
+                input.addEventListener('blur', function() {
+                    this.value = this.value.trim();
+                });
+            });
         };
     </script>
 </body>
